@@ -1,3 +1,22 @@
+"""
+/************************************************************************************************
+ * Organization  : LognCoding
+ * Project       : AI Rescue Buoy
+ * Author        : Joonghui Cho
+ *
+ * System        : Raspberry Pi
+ * OS            : Raspberry Pi OS
+ *
+ * Description:
+ * This script operates as the central control hub for the AI Rescue Buoy.
+ * It runs a YOLOv8 Nano object detection model on a live webcam feed to detect persons in the water.
+ * The script computes steering and throttle control values based on the target's position and distance.
+ * It features a Flask-based MJPEG video streaming server for low-latency web dashboard monitoring.
+ * Additionally, it handles two-way UART serial communication with an Arduino Mega to send physical 
+ * motor commands and receive sensor telemetry (GPS, Heading), syncing all data with Firebase.
+************************************************************************************************/
+"""
+
 import cv2
 import serial
 import time
@@ -24,18 +43,14 @@ current_frame = None
 control_mode = "AUTO"
 manual_throttle = 1000
 manual_steering = 90
-mic_on = 0
-speaker_on = 0
 
 def db_listener(event):
-    global control_mode, manual_throttle, manual_steering, mic_on, speaker_on
+    global control_mode, manual_throttle, manual_steering
     data = db.reference('buoys/buoy_01/control').get()
     if data:
         control_mode = data.get("mode", "AUTO")
         manual_throttle = data.get("throttle", 1000)
         manual_steering = data.get("steering", 90)
-        mic_on = data.get("mic", 0)
-        speaker_on = data.get("speaker", 0)
 
 db.reference('buoys/buoy_01/control').listen(db_listener)
 
@@ -53,8 +68,28 @@ def generate_frames():
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+def serial_read_loop():
+    while True:
+        if ser.in_waiting > 0:
+            try:
+                line = ser.readline().decode('utf-8').strip()
+                if line.startswith('<') and line.endswith('>'):
+                    data = line[1:-1].split(',')
+                    if len(data) == 3:
+                        lat = float(data[0])
+                        lon = float(data[1])
+                        heading = float(data[2])
+                        db.reference('buoys/buoy_01/telemetry').update({
+                            'latitude': lat,
+                            'longitude': lon,
+                            'heading': heading
+                        })
+            except:
+                pass
+        time.sleep(0.05)
+
 def buoy_core_loop():
-    global current_frame, control_mode, manual_throttle, manual_steering, mic_on, speaker_on
+    global current_frame, control_mode, manual_throttle, manual_steering
     
     FRAME_CENTER_X = 320
     Kp = 0.1
@@ -100,11 +135,12 @@ def buoy_core_loop():
             throttle = manual_throttle
             steering = manual_steering
 
-        command = f"<{throttle},{steering},{mic_on},{speaker_on}>\n"
+        command = f"<{throttle},{steering}>\n"
         ser.write(command.encode('utf-8'))
         
         time.sleep(0.05)
 
 if __name__ == '__main__':
     threading.Thread(target=buoy_core_loop, daemon=True).start()
+    threading.Thread(target=serial_read_loop, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, threaded=True)

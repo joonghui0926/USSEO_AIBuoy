@@ -12,9 +12,9 @@ import {
 } from "firebase/auth";
 import { getFirestore, doc, onSnapshot, setDoc } from "firebase/firestore";
 import { 
-  Activity, Battery, MapPin, AlertTriangle, Anchor, Navigation, 
+  Activity, MapPin, AlertTriangle, Anchor, Navigation, 
   Siren, Camera, X, Maximize2, LogOut, ShieldCheck, Mail, Lock, User, AlertCircle,
-  Cpu, Gamepad2, Mic, MicOff, Volume2, VolumeX, ArrowUp, ArrowDown, ArrowLeft, ArrowRight
+  Cpu, Gamepad2, Mic, MicOff, Volume2, VolumeX, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Compass
 } from 'lucide-react';
 
 const firebaseConfig = {
@@ -210,7 +210,6 @@ const useBuoyData = () => {
   const [data, setData] = useState({
     lat: CENTER_BASE.lat,
     lng: CENTER_BASE.lng,
-    battery: 100,
     speed: 0,
     heading: 0,
     status: 'IDLE',
@@ -229,11 +228,10 @@ const useBuoyData = () => {
         const d = docSnap.data();
         setData(prev => ({
           ...prev,
-          lat: d.telemetry?.latitude || prev.lat,
-          lng: d.telemetry?.longitude || prev.lng,
-          battery: d.telemetry?.battery_voltage || prev.battery,
-          speed: d.telemetry?.speed || prev.speed,
-          heading: d.telemetry?.heading || prev.heading,
+          lat: d.telemetry?.latitude !== undefined ? d.telemetry.latitude : prev.lat,
+          lng: d.telemetry?.longitude !== undefined ? d.telemetry.longitude : prev.lng,
+          speed: d.telemetry?.speed !== undefined ? d.telemetry.speed : prev.speed,
+          heading: d.telemetry?.heading !== undefined ? d.telemetry.heading : prev.heading,
           status: d.status?.current_mode || prev.status,
           personDetected: d.status?.is_person_detected || false,
           connection: 'ONLINE'
@@ -327,6 +325,8 @@ const Dashboard = () => {
   };
 
   const camImageSrc = `http://${PI_IP}:5000/video_feed`;
+  const mapLat = buoy.lat === 0 ? CENTER_BASE.lat : buoy.lat;
+  const mapLng = buoy.lng === 0 ? CENTER_BASE.lng : buoy.lng;
 
   return (
     <div className="relative w-full h-screen bg-slate-50 overflow-hidden font-sans text-slate-800">
@@ -334,7 +334,7 @@ const Dashboard = () => {
         {isLoaded ? (
           <GoogleMap
             mapContainerStyle={{ width: '100%', height: '100vh' }}
-            center={{ lat: buoy.lat, lng: buoy.lng }}
+            center={{ lat: mapLat, lng: mapLng }}
             zoom={16}
             onLoad={onLoad}
             onUnmount={onUnmount}
@@ -345,7 +345,7 @@ const Dashboard = () => {
             }}
           >
             <Marker 
-              position={{ lat: buoy.lat, lng: buoy.lng }} 
+              position={{ lat: mapLat, lng: mapLng }} 
               icon={{
                 path: window.google?.maps.SymbolPath.CIRCLE,
                 scale: 10,
@@ -356,7 +356,7 @@ const Dashboard = () => {
               }}
             />
             <Circle
-              center={{ lat: buoy.lat, lng: buoy.lng }}
+              center={{ lat: mapLat, lng: mapLng }}
               radius={50}
               options={{
                 fillColor: buoy.personDetected ? "#EF4444" : "#FF5722",
@@ -477,11 +477,11 @@ const Dashboard = () => {
             </div>
             <div className="bg-slate-50 p-3 rounded-xl">
               <div className="flex items-center gap-2 text-slate-400 mb-1">
-                <Battery size={14} />
-                <span className="text-xs font-medium">Battery</span>
+                <Compass size={14} className="transform transition-transform duration-500" style={{ rotate: `${buoy.heading}deg` }} />
+                <span className="text-xs font-medium">Heading</span>
               </div>
-              <p className={`text-2xl font-bold ${buoy.battery < 20 ? 'text-red-500' : 'text-slate-800'}`}>
-                {Number(buoy.battery).toFixed(0)} <span className="text-xs font-normal text-slate-500">%</span>
+              <p className="text-2xl font-bold text-slate-800">
+                {buoy.heading.toFixed(0)}<span className="text-xs font-normal text-slate-500">°</span>
               </p>
             </div>
           </div>
@@ -493,7 +493,7 @@ const Dashboard = () => {
                 <span>GPS Location</span>
               </div>
               <span className="font-mono bg-slate-100 px-2 py-0.5 rounded text-xs">
-                {buoy.lat.toFixed(4)}, {buoy.lng.toFixed(4)}
+                {mapLat.toFixed(4)}, {mapLng.toFixed(4)}
               </span>
             </div>
           </div>
