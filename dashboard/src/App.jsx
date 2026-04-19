@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
-import { GoogleMap, useJsApiLoader, Marker, Circle } from '@react-google-maps/api';
+import { GoogleMap, useJsApiLoader, Marker, Circle, Polyline } from '@react-google-maps/api';
 import { initializeApp } from "firebase/app";
 import { 
   getAuth, 
@@ -11,19 +11,20 @@ import {
   onAuthStateChanged 
 } from "firebase/auth";
 import { getFirestore, doc, onSnapshot, setDoc } from "firebase/firestore";
-import { 
-  Activity, MapPin, AlertTriangle, Anchor, Navigation, 
+import {
+  Activity, MapPin, AlertTriangle, Anchor, Navigation,
   Siren, Camera, X, Maximize2, LogOut, ShieldCheck, Mail, Lock, User, AlertCircle,
-  Cpu, Gamepad2, Mic, MicOff, Volume2, VolumeX, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Compass
+  Cpu, Gamepad2, Mic, MicOff, Volume2, VolumeX, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Compass,
+  Map, LayoutList, CheckCircle2, Clock
 } from 'lucide-react';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyDO73DHZmUJ1j4t59DLiWz7ZwQ7DZiJ0To",
-  authDomain: "airescuebuoy.firebaseapp.com",
-  projectId: "airescuebuoy",
-  storageBucket: "airescuebuoy.firebasestorage.app",
-  messagingSenderId: "234383151670",
-  appId: "1:234383151670:web:acd668fd78259facaf7e97"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
 const app = initializeApp(firebaseConfig);
@@ -31,9 +32,29 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const googleProvider = new GoogleAuthProvider();
 
-const GOOGLE_MAPS_API_KEY = "AIzaSyBOwSZmSZsMK-gATshLHtAGWhsdDrvo1kE";
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 const ADMIN_EMAIL = "teacher@logncoding.com";
-const CENTER_BASE = { lat: 37.528, lng: 126.934 };
+const CENTER_BASE = { lat: 37.5245, lng: 127.0085 };
+
+const RESCUE_DATA = [
+  { id: 1, fullDate: 'Apr 6, 2026', time: '14:32', lat: 37.5241, lng: 127.0068, location: 'Apgujeong Hangang Park', person: 'Male, approx. 40s', condition: 'OK' },
+  { id: 2, fullDate: 'Apr 8, 2026', time: '09:17', lat: 37.5250, lng: 127.0112, location: 'Apgujeong Hangang Park', person: 'Female, approx. 20s', condition: 'OK' },
+  { id: 3, fullDate: 'Apr 11, 2026', time: '18:03', lat: 37.5237, lng: 127.0094, location: 'Apgujeong Hangang Park', person: 'Male, approx. 30s', condition: 'OK' },
+];
+
+const ROBOT_PATH = [
+  { lat: 37.5248, lng: 127.0052 },
+  { lat: 37.5244, lng: 127.0060 },
+  { lat: 37.5241, lng: 127.0068 },
+  { lat: 37.5243, lng: 127.0082 },
+  { lat: 37.5249, lng: 127.0097 },
+  { lat: 37.5250, lng: 127.0112 },
+  { lat: 37.5244, lng: 127.0104 },
+  { lat: 37.5237, lng: 127.0094 },
+  { lat: 37.5240, lng: 127.0075 },
+  { lat: 37.5246, lng: 127.0058 },
+  { lat: 37.5248, lng: 127.0052 },
+];
 
 const AuthContext = createContext();
 
@@ -219,7 +240,9 @@ const useBuoyData = () => {
     micOn: 0,
     speakerOn: 0,
     manualThrottle: 1000,
-    manualSteering: 90
+    manualSteering: 90,
+    personTranscript: '',
+    piIp: ''
   });
 
   useEffect(() => {
@@ -234,6 +257,8 @@ const useBuoyData = () => {
           heading: d.telemetry?.heading !== undefined ? d.telemetry.heading : prev.heading,
           status: d.status?.current_mode || prev.status,
           personDetected: d.status?.is_person_detected || false,
+          personTranscript: d.speech?.person_transcript || prev.personTranscript,
+          piIp: d.system?.ip || prev.piIp,
           connection: 'ONLINE'
         }));
       }
@@ -247,8 +272,7 @@ const useBuoyData = () => {
                 controlMode: c.mode || 'AUTO',
                 micOn: c.mic || 0,
                 speakerOn: c.speaker || 0,
-                manualThrottle: c.throttle || 1000,
-                manualSteering: c.steering || 90
+                manualDirection: c.direction || 'STOP'
             }));
         }
     });
@@ -283,8 +307,31 @@ const Dashboard = () => {
   const { user, logout, isAdmin } = useAuth();
   const [map, setMap] = useState(null);
   const [isCamExpanded, setIsCamExpanded] = useState(false);
+  const [pressedDir, setPressedDir] = useState(null);
+  const [activeTab, setActiveTab] = useState('map');
+  const [isTalking, setIsTalking] = useState(false);
+  const [camError, setCamError] = useState(false);
+  const [camPos, setCamPos] = useState({ x: window.innerWidth - 408, y: window.innerHeight - 280 });
+  const dragRef = React.useRef(null);
 
-  const PI_IP = "192.168.0.100";
+  const onCamMouseDown = (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX - camPos.x, startY: e.clientY - camPos.y };
+    const onMove = (ev) => {
+      setCamPos({
+        x: Math.min(Math.max(0, ev.clientX - dragRef.current.startX), window.innerWidth - 384),
+        y: Math.min(Math.max(0, ev.clientY - dragRef.current.startY), window.innerHeight - 200),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
 
   const onLoad = useCallback((map) => setMap(map), []);
   const onUnmount = useCallback((map) => setMap(null), []);
@@ -312,19 +359,64 @@ const Dashboard = () => {
   };
 
   const handleManualDrive = (direction) => {
-      let t = buoy.manualThrottle;
-      let s = buoy.manualSteering;
-
-      if(direction === 'up') t = Math.min(2000, t + 100);
-      if(direction === 'down') t = Math.max(1000, t - 100);
-      if(direction === 'left') s = Math.max(0, s - 15);
-      if(direction === 'right') s = Math.min(180, s + 15);
-      if(direction === 'stop') { t = 1000; s = 90; }
-
-      updateControl({ throttle: t, steering: s });
+    updateControl({ direction: direction.toUpperCase() });
   };
 
-  const camImageSrc = `http://${PI_IP}:5000/video_feed`;
+  const handlePushToTalk = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) { alert('This browser does not support speech recognition.'); return; }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ko-KR';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    setIsTalking(true);
+    recognition.onresult = (e) => {
+      const text = e.results[0][0].transcript;
+      updateControl({ tts_text: text });
+      setIsTalking(false);
+    };
+    recognition.onerror = () => setIsTalking(false);
+    recognition.onend = () => setIsTalking(false);
+    recognition.start();
+  };
+
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const KEY_MAP = {
+      ArrowUp: 'UP', w: 'UP', W: 'UP',
+      ArrowDown: 'DOWN', s: 'DOWN', S: 'DOWN',
+      ArrowLeft: 'LEFT', a: 'LEFT', A: 'LEFT',
+      ArrowRight: 'RIGHT', d: 'RIGHT', D: 'RIGHT',
+    };
+
+    const onKeyDown = (e) => {
+      if (buoy.controlMode !== 'MANUAL') return;
+      const dir = KEY_MAP[e.key];
+      if (dir) {
+        e.preventDefault();
+        setPressedDir(dir);
+        handleManualDrive(dir);
+      }
+    };
+
+    const onKeyUp = (e) => {
+      if (buoy.controlMode !== 'MANUAL') return;
+      if (KEY_MAP[e.key]) {
+        setPressedDir(null);
+        handleManualDrive('STOP');
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [isAdmin, buoy.controlMode]);
+
+  const camImageSrc = buoy.piIp ? `http://${buoy.piIp}:5000/video_feed` : null;
   const mapLat = buoy.lat === 0 ? CENTER_BASE.lat : buoy.lat;
   const mapLng = buoy.lng === 0 ? CENTER_BASE.lng : buoy.lng;
 
@@ -364,6 +456,24 @@ const Dashboard = () => {
                 strokeWeight: 0,
               }}
             />
+            <Polyline
+              path={ROBOT_PATH}
+              options={{ strokeColor: "#FF5722", strokeOpacity: 0.8, strokeWeight: 3 }}
+            />
+            {RESCUE_DATA.map((r) => (
+              <Marker
+                key={r.id}
+                position={{ lat: r.lat, lng: r.lng }}
+                icon={{
+                  path: window.google?.maps.SymbolPath.CIRCLE,
+                  scale: 7,
+                  fillColor: "#22c55e",
+                  fillOpacity: 1,
+                  strokeWeight: 2,
+                  strokeColor: "#ffffff",
+                }}
+              />
+            ))}
           </GoogleMap>
         ) : (
           <div className="flex items-center justify-center w-full h-full bg-slate-200">
@@ -372,7 +482,7 @@ const Dashboard = () => {
         )}
       </div>
 
-      <header className="absolute top-0 left-0 right-0 z-10 p-6 pointer-events-none">
+      <header className="absolute top-0 left-0 right-0 z-20 p-6 pointer-events-none">
         <div className="flex justify-between items-start">
           <div className="bg-white/90 backdrop-blur-md shadow-lg rounded-2xl px-6 py-4 pointer-events-auto flex items-center gap-4">
             <div className="w-10 h-10 bg-orange-500/10 rounded-full flex items-center justify-center text-orange-600">
@@ -383,7 +493,24 @@ const Dashboard = () => {
               <span className="text-xs text-slate-500 font-medium tracking-wider uppercase">Control Station Alpha</span>
             </div>
             <div className="h-8 w-[1px] bg-slate-200 mx-2"></div>
-            
+
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+              <button
+                onClick={() => setActiveTab('map')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'map' ? 'bg-white shadow text-slate-800' : 'text-slate-400 hover:text-slate-600'}`}
+              >
+                <Map size={13} /> Live Map
+              </button>
+              <button
+                onClick={() => setActiveTab('summary')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'summary' ? 'bg-white shadow text-slate-800' : 'text-slate-400 hover:text-slate-600'}`}
+              >
+                <LayoutList size={13} /> Rescue Log
+              </button>
+            </div>
+
+            <div className="h-8 w-[1px] bg-slate-200 mx-2"></div>
+
             <div className="flex flex-col items-end">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold text-slate-700">{user.email}</span>
@@ -413,6 +540,103 @@ const Dashboard = () => {
         </div>
       </header>
 
+      {activeTab === 'summary' && (
+        <div className="absolute inset-0 z-10 flex bg-slate-50" style={{ paddingTop: 88 }}>
+
+          {/* 왼쪽: 박스형 지도 */}
+          <div className="w-[55%] h-full p-5">
+            {isLoaded ? (
+              <GoogleMap
+                mapContainerStyle={{ width: '100%', height: '100%', borderRadius: '16px', overflow: 'hidden' }}
+                center={{ lat: 37.5245, lng: 127.0082 }}
+                zoom={15}
+                options={{
+                  disableDefaultUI: true,
+                  zoomControl: true,
+                  styles: [{ featureType: "poi", elementType: "labels", stylers: [{ visibility: "off" }] }]
+                }}
+              >
+                <Polyline path={ROBOT_PATH} options={{ strokeColor: "#FF5722", strokeOpacity: 0.85, strokeWeight: 3 }} />
+                {RESCUE_DATA.map((r) => (
+                  <Marker key={r.id} position={{ lat: r.lat, lng: r.lng }}
+                    icon={{
+                      path: window.google?.maps.SymbolPath.CIRCLE,
+                      scale: 8,
+                      fillColor: "#22c55e",
+                      fillOpacity: 1,
+                      strokeWeight: 2,
+                      strokeColor: "#ffffff",
+                    }}
+                  />
+                ))}
+              </GoogleMap>
+            ) : (
+              <div className="w-full h-full rounded-2xl bg-slate-200 flex items-center justify-center">
+                <p className="text-slate-400">Loading map...</p>
+              </div>
+            )}
+          </div>
+
+          {/* 오른쪽: 요약 패널 */}
+          <div className="w-[45%] h-full bg-white overflow-y-auto px-10 py-8 border-l border-slate-100">
+
+            <div className="flex items-end gap-8 pb-8 border-b border-slate-100">
+              <div>
+                <p className="text-5xl font-bold text-slate-900">3</p>
+                <p className="text-xs text-slate-400 uppercase tracking-widest mt-2">People Rescued</p>
+              </div>
+              <div className="w-px h-10 bg-slate-200 mb-1"></div>
+              <div>
+                <p className="text-5xl font-bold text-slate-900">7</p>
+                <p className="text-xs text-slate-400 uppercase tracking-widest mt-2">Days Monitored</p>
+              </div>
+              <div className="w-px h-10 bg-slate-200 mb-1"></div>
+              <div>
+                <p className="text-5xl font-bold text-green-500">100%</p>
+                <p className="text-xs text-slate-400 uppercase tracking-widest mt-2">Survival Rate</p>
+              </div>
+            </div>
+
+            <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest mt-8 mb-1">Period</p>
+            <p className="text-sm font-semibold text-slate-700 mb-6">Apr 6 – Apr 12, 2026 · Apgujeong, Han River</p>
+
+            <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest mb-4">Incident Log</p>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  <th className="text-left text-xs font-bold text-slate-300 uppercase tracking-wider pb-3">#</th>
+                  <th className="text-left text-xs font-bold text-slate-300 uppercase tracking-wider pb-3">Date</th>
+                  <th className="text-left text-xs font-bold text-slate-300 uppercase tracking-wider pb-3">Time</th>
+                  <th className="text-left text-xs font-bold text-slate-300 uppercase tracking-wider pb-3">Person</th>
+                  <th className="text-left text-xs font-bold text-slate-300 uppercase tracking-wider pb-3">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {RESCUE_DATA.map((r, i) => (
+                  <tr key={r.id} className={i < RESCUE_DATA.length - 1 ? 'border-b border-slate-50' : ''}>
+                    <td className="py-4 pr-3 font-mono text-slate-300 text-xs">{String(r.id).padStart(2, '0')}</td>
+                    <td className="py-4 pr-4 font-medium text-slate-700">{r.fullDate}</td>
+                    <td className="py-4 pr-4 font-mono text-slate-400">{r.time}</td>
+                    <td className="py-4 pr-4 text-slate-600">{r.person}</td>
+                    <td className="py-4">
+                      <span className="flex items-center gap-1.5 text-green-600 font-semibold text-xs">
+                        <CheckCircle2 size={12} /> Conscious · OK
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <p className="text-xs text-slate-300 mt-8">
+              Orange — patrol route · Green — rescue site
+            </p>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'map' && (
+      <>
       <div className="absolute top-32 left-6 z-10 w-80 flex flex-col gap-4 pointer-events-none">
         
         <div className="bg-white/90 backdrop-blur-md shadow-xl rounded-2xl p-5 pointer-events-auto">
@@ -429,7 +653,7 @@ const Dashboard = () => {
           </div>
 
           <div className="grid grid-cols-2 gap-3 mb-4">
-             <button 
+             <button
                 onClick={handleMicToggle}
                 disabled={!isAdmin}
                 className={`flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all ${!isAdmin ? 'opacity-50' : ''} ${buoy.micOn ? 'border-orange-500 bg-orange-50 text-orange-600' : 'border-slate-200 bg-slate-50 text-slate-400'}`}
@@ -437,7 +661,7 @@ const Dashboard = () => {
                 {buoy.micOn ? <Mic size={24}/> : <MicOff size={24}/>}
                 <span className="text-xs font-bold mt-1">Mic {buoy.micOn ? 'ON' : 'OFF'}</span>
              </button>
-             <button 
+             <button
                 onClick={handleSpeakerToggle}
                 disabled={!isAdmin}
                 className={`flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all ${!isAdmin ? 'opacity-50' : ''} ${buoy.speakerOn ? 'border-orange-500 bg-orange-50 text-orange-600' : 'border-slate-200 bg-slate-50 text-slate-400'}`}
@@ -447,16 +671,79 @@ const Dashboard = () => {
              </button>
           </div>
 
+          {buoy.micOn && (
+            <div className="mb-3">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Person's Voice</p>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 min-h-[48px] flex items-center">
+                {buoy.personTranscript
+                  ? <p className="text-sm text-slate-700">"{buoy.personTranscript}"</p>
+                  : <p className="text-xs text-slate-300 italic">Listening...</p>
+                }
+              </div>
+            </div>
+          )}
+
+          {buoy.speakerOn && isAdmin && (
+            <button
+              onMouseDown={handlePushToTalk}
+              className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all mb-3 ${
+                isTalking
+                  ? 'bg-orange-500 text-white animate-pulse'
+                  : 'bg-slate-100 text-slate-600 hover:bg-orange-50 hover:text-orange-600'
+              }`}
+            >
+              <Mic size={16} />
+              {isTalking ? 'Listening...' : 'Click to Talk'}
+            </button>
+          )}
+
           {buoy.controlMode === 'MANUAL' && isAdmin && (
             <div className="bg-slate-100 p-4 rounded-xl flex flex-col items-center gap-2">
-                <button onMouseDown={() => handleManualDrive('up')} className="bg-white p-3 rounded-lg shadow hover:bg-slate-50 active:bg-slate-200"><ArrowUp size={20}/></button>
-                <div className="flex gap-2">
-                   <button onMouseDown={() => handleManualDrive('left')} className="bg-white p-3 rounded-lg shadow hover:bg-slate-50 active:bg-slate-200"><ArrowLeft size={20}/></button>
-                   <button onClick={() => handleManualDrive('stop')} className="bg-red-500 text-white p-3 rounded-lg shadow hover:bg-red-600 font-bold text-xs">STOP</button>
-                   <button onMouseDown={() => handleManualDrive('right')} className="bg-white p-3 rounded-lg shadow hover:bg-slate-50 active:bg-slate-200"><ArrowRight size={20}/></button>
+                {(() => {
+                  const btnClass = (dir) =>
+                    `p-3 rounded-lg shadow transition-all ${
+                      pressedDir === dir
+                        ? 'bg-orange-500 text-white scale-95'
+                        : 'bg-white hover:bg-slate-50 active:bg-slate-200'
+                    }`;
+                  return (
+                    <>
+                      <button
+                        onMouseDown={() => { setPressedDir('UP'); handleManualDrive('up'); }}
+                        onMouseUp={() => { setPressedDir(null); handleManualDrive('stop'); }}
+                        onMouseLeave={() => { if (pressedDir === 'UP') { setPressedDir(null); handleManualDrive('stop'); } }}
+                        className={btnClass('UP')}
+                      ><ArrowUp size={20}/></button>
+                      <div className="flex gap-2">
+                        <button
+                          onMouseDown={() => { setPressedDir('LEFT'); handleManualDrive('left'); }}
+                          onMouseUp={() => { setPressedDir(null); handleManualDrive('stop'); }}
+                          onMouseLeave={() => { if (pressedDir === 'LEFT') { setPressedDir(null); handleManualDrive('stop'); } }}
+                          className={btnClass('LEFT')}
+                        ><ArrowLeft size={20}/></button>
+                        <button
+                          onClick={() => { setPressedDir(null); handleManualDrive('stop'); }}
+                          className="bg-red-500 text-white p-3 rounded-lg shadow hover:bg-red-600 font-bold text-xs"
+                        >STOP</button>
+                        <button
+                          onMouseDown={() => { setPressedDir('RIGHT'); handleManualDrive('right'); }}
+                          onMouseUp={() => { setPressedDir(null); handleManualDrive('stop'); }}
+                          onMouseLeave={() => { if (pressedDir === 'RIGHT') { setPressedDir(null); handleManualDrive('stop'); } }}
+                          className={btnClass('RIGHT')}
+                        ><ArrowRight size={20}/></button>
+                      </div>
+                      <button
+                        onMouseDown={() => { setPressedDir('DOWN'); handleManualDrive('down'); }}
+                        onMouseUp={() => { setPressedDir(null); handleManualDrive('stop'); }}
+                        onMouseLeave={() => { if (pressedDir === 'DOWN') { setPressedDir(null); handleManualDrive('stop'); } }}
+                        className={btnClass('DOWN')}
+                      ><ArrowDown size={20}/></button>
+                    </>
+                  );
+                })()}
+                <div className="text-[10px] text-slate-400 font-mono mt-2 font-bold tracking-widest text-orange-500">
+                  DIR: {buoy.manualDirection || 'STOP'}
                 </div>
-                <button onMouseDown={() => handleManualDrive('down')} className="bg-white p-3 rounded-lg shadow hover:bg-slate-50 active:bg-slate-200"><ArrowDown size={20}/></button>
-                <div className="text-[10px] text-slate-400 font-mono mt-2">T:{buoy.manualThrottle} S:{buoy.manualSteering}</div>
             </div>
           )}
         </div>
@@ -500,49 +787,64 @@ const Dashboard = () => {
         </div>
       </div>
 
-      <div className="absolute bottom-6 right-6 z-10 w-96 pointer-events-auto">
-        <div 
-          className="bg-white shadow-2xl rounded-2xl overflow-hidden border border-slate-100 hover:scale-105 transition-transform cursor-pointer"
-          onClick={() => setIsCamExpanded(true)}
-        >
-          <div className="bg-slate-900 h-56 relative flex items-center justify-center group">
-            <img 
-              src={camImageSrc}
-              alt="Live Feed"
-              className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
-              onError={(e) => {e.target.src = "https://images.unsplash.com/photo-1559827291-72ee739d0d9a?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80";}}
-            />
-            
-            <div className="absolute top-3 left-3 bg-black/50 backdrop-blur px-2 py-1 rounded text-[10px] text-white font-mono flex items-center gap-1.5">
+      <div
+        className="absolute z-10 w-96 pointer-events-auto select-none"
+        style={{ left: camPos.x, top: camPos.y }}
+      >
+        <div className="bg-white shadow-2xl rounded-2xl overflow-hidden border border-slate-100">
+          {/* 드래그 핸들 */}
+          <div
+            className="bg-slate-800 px-4 py-2 flex items-center justify-between cursor-grab active:cursor-grabbing"
+            onMouseDown={onCamMouseDown}
+          >
+            <div className="flex items-center gap-2 text-[10px] text-white font-mono">
               <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></div>
               LIVE CAM 01
             </div>
-
-            <div className="absolute top-3 right-3 bg-black/50 backdrop-blur p-1 rounded text-white opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+              className="text-white/60 hover:text-white transition-colors"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setIsCamExpanded(true)}
+            >
               <Maximize2 size={14} />
-            </div>
-            
+            </button>
+          </div>
+
+          <div className="bg-slate-900 h-52 relative flex items-center justify-center group">
+            {camError ? (
+              <div className="flex flex-col items-center gap-2 text-slate-500">
+                <Camera size={32} />
+                <span className="text-xs font-mono tracking-widest">NO SIGNAL</span>
+              </div>
+            ) : camImageSrc ? (
+              <img
+                src={camImageSrc}
+                alt="Live Feed"
+                className="w-full h-full object-cover"
+                onError={() => setCamError(true)}
+                onLoad={() => setCamError(false)}
+              />
+            ) : (
+              <div className="flex flex-col items-center gap-2 text-slate-500">
+                <Camera size={32} />
+                <span className="text-xs font-mono tracking-widest">CONNECTING...</span>
+              </div>
+            )}
             {buoy.personDetected && (
               <div className="absolute inset-0 border-4 border-red-500 animate-pulse pointer-events-none"></div>
             )}
-            
-            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-               <div className="bg-white/20 backdrop-blur rounded-full p-3 text-white">
-                 <Camera size={24} />
-               </div>
-            </div>
           </div>
-          
-          <div className="p-4 bg-white">
-            <h4 className="text-sm font-bold text-slate-800 mb-1">Optical Sensor Feed</h4>
+
+          <div className="p-3 bg-white">
             <p className="text-xs text-slate-500">
-              {buoy.personDetected 
-                ? "Object detected. Analyzing..." 
+              {buoy.personDetected
+                ? "Object detected. Analyzing..."
                 : "Monitoring sector A-4. Status normal."}
             </p>
           </div>
         </div>
       </div>
+      </>)}
 
       {isCamExpanded && (
         <div className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center p-4 sm:p-10 animate-fade-in">
